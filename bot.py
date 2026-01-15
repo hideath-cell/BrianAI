@@ -85,18 +85,28 @@ def get_article_content(url):
     return None
 
 def get_gemini_summary(keyword, text_data):
-    if not GEMINI_API_KEY: return "⚠️ API Key Missing"
+    if not GEMINI_API_KEY: return "⚠️ API 키가 없습니다."
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
+        
+        # ★ 프롬프트를 100% 한글로 변경하고, 한국어 강제 조항을 넣었습니다.
         prompt = f"""
-        Role: Professional Financial Analyst.
-        Topic: '{keyword}'
-        Task: Provide a briefing based on the provided news.
-        Format:
-        [Part 1: ⚡ Key Point] 3 bullet points with emojis. Bold numbers.
-        [Part 2: 📝 Context] 300 characters summary. Polite Korean (해요체).
-        Data: {text_data}
+        당신은 유능한 펀드매니저이자 시장 분석가입니다. 
+        제공된 뉴스 데이터를 바탕으로 '{keyword}' 종목에 대한 투자 브리핑을 작성하세요.
+
+        [지시 사항]
+        1. 언어: **무조건 한국어(Korean)**로 작성하십시오.
+        2. 어조: 전문적이고 객관적이되, 정중한 '해요체'를 사용하십시오.
+        3. 서식: 중요 숫자나 키워드는 <b>태그로 굵게 표시하십시오.
+
+        [출력 양식]
+        Part 1: ⚡ **3줄 핵심 요약** (이모지 활용, 핵심 이슈 위주)
+        Part 2: 📝 **상세 시장 흐름** (300자 내외, 등락의 원인과 배경 설명)
+
+        [뉴스 데이터]
+        {text_data}
         """
+        
         return client.models.generate_content(model="gemini-2.0-flash", contents=prompt).text
     except Exception as e: return f"AI Error: {e}"
 
