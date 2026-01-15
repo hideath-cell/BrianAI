@@ -1,0 +1,11 @@
+streamlit
+pandas
+yfinance
+supabase
+python-dotenv
+requests
+beautifulsoup4
+newspaper3k
+lxml_html_clean
+trafilatura
+google-genai
