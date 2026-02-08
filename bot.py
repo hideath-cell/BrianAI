@@ -50,31 +50,56 @@ def get_db_data():
         print(f"❌ DB 조회 실패: {e}")
         return [], {}
 
-# --- [유틸리티] 주가 정보 조회 ---
+from quant_analyzer import analyze_stock
+
+# --- [유틸리티] 지표 아이콘 판별 ---
+def get_brief_icon(name, val):
+    if val is None: return "⚪"
+    if name == "score":
+        if val >= 70: return "💎"
+        if val <= 30: return "⚠️"
+        return "📈" if val >= 50 else "📉"
+    return ""
+
+# --- [유틸리티] 주가 정보 및 퀀트 분석 조회 ---
 def get_stock_info(keyword, ticker_map):
     ticker = ticker_map.get(keyword)
     if not ticker: return ""
     try:
+        # 1년치 데이터 가져오기 (퀀트 엔진용)
         stock = yf.Ticker(ticker)
-        info = stock.fast_info
-        price = info.last_price
-        if price is None: return ""
+        df = stock.history(period="1y")
+        if df.empty: return ""
         
-        change = price - info.previous_close
-        change_pct = (change / info.previous_close) * 100
-        emoji = "🔺" if change > 0 else "🦋" if change < 0 else "➖"
+        # 퀀트 분석 수행
+        m = analyze_stock(df)
+        if "error" in m: return f"\n⚠️ {keyword}: 데이터 부족으로 분석 불가\n"
+
+        price = m['price']
+        # 전일 종가 기반 등락 계산 (yf match)
+        prev_price = df['Close'].iloc[-2] if len(df) >= 2 else price
+        change_pct = ((price - prev_price) / prev_price) * 100
+        emoji = "🔺" if change_pct > 0 else "🦋" if change_pct < 0 else "➖"
         
-        vol_str = ""
-        if info.last_volume and info.three_month_average_volume:
-            vol_ratio = (info.last_volume / info.three_month_average_volume) * 100
-            vol_stat = "🔥폭발" if vol_ratio >= 200 else "➖평이"
-            vol_str = f"거래량: {vol_stat} ({vol_ratio:.0f}%)\n"
+        # 퀀트 스코어 및 주요 지표 요약
+        score_icon = get_brief_icon("score", m['score'])
         
-        result = f"\n💰 <b>{keyword} 시장 현황</b>\n{'-'*20}\n"
+        result = f"\n📊 <b>{keyword} 퀀트 브리핑</b>\n{'-'*20}\n"
         result += f"현재가: {price:,.0f} ({emoji} {change_pct:.2f}%)\n"
-        result += vol_str + "\n"
-        return result
-    except: return ""
+        result += f"종합점수: {score_icon} <b>{m['score']}점</b>\n"
+        
+        # 주요 지표 1줄 요약
+        rsi_val = f"{m['rsi']:.0f}" if m['rsi'] else "-"
+        vol_val = f"{m['volume_ratio']:.0f}%" if m['volume_ratio'] else "-"
+        result += f"RSI: {rsi_val} | 수급: {vol_val} | 52주: {m['position_52w']:.0f}%\n"
+        
+        if m['stop_loss']:
+            result += f"추천손절: 🛡️ {m['stop_loss']:,.0f}원\n"
+        
+        return result + "\n"
+    except Exception as e:
+        print(f"Stock Info Error ({keyword}): {e}")
+        return ""
 
 # --- [핵심] 뉴스 수집 엔진 (구글 + 빙) ---
 def fetch_rss_items(keyword):

@@ -1,0 +1,33 @@
+name: Market Open Deep Report (9 AM)
+
+on:
+  schedule:
+    # 한국 시간(KST) 오전 9시 (장 시작 정밀 분석)
+    # UTC 기준 00:00
+    - cron: '0 0 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: 1. 시장 스캔 (Target Discovery)
+      env:
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      run: python volatility_scanner.py
+
+    - name: 2. 퀀트 정밀 분석 로그 생성 (Deep Analysis)
+      env:
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      run: python quant_reporter.py
