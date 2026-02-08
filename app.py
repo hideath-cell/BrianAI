@@ -2,10 +2,11 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import os
-from dotenv import load_dotenv
-from supabase import create_client, Client
 import time
 import datetime
+from dotenv import load_dotenv
+from supabase import create_client, Client
+from quant_analyzer import analyze_stock
 
 # 1. 페이지 설정
 st.set_page_config(page_title="News Bot Dashboard", page_icon="📈", layout="wide")
@@ -26,55 +27,63 @@ def init_connection():
 
 supabase = init_connection()
 
-# --- 기술적 지표 계산 함수 ---
-def calculate_indicators(df):
-    """
-    RSI(14)와 이동평균(20) 괴리율 계산
-    """
-    if len(df) < 20: return None, None # 데이터 부족
-
-    # 1. RSI 계산
-    delta = df['Close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    rs = gain / loss
-    rsi = 100 - (100 / (1 + rs))
+# --- UI 헬퍼 함수 ---
+def get_indicator_status(name, value):
+    """지표별 아이콘 및 상태 텍스트 반환"""
+    if value is None: return "⚪", "데이터부족"
     
-    # 2. 이동평균선(20일) 및 괴리율
-    ma20 = df['Close'].rolling(window=20).mean()
-    current_price = df['Close'].iloc[-1]
-    last_ma20 = ma20.iloc[-1]
-    disparity = ((current_price - last_ma20) / last_ma20) * 100 # % 단위
-
-    return rsi.iloc[-1], disparity
+    if name == "RSI":
+        if value >= 70: return "🔥", "과매수"
+        if value <= 30: return "❄️", "과매도"
+        return "⚖️", "중립"
+    elif name == "MFI":
+        if value >= 80: return "💰", "유입강함"
+        if value <= 20: return "💸", "이탈주의"
+        return "⚖️", "보통"
+    elif name == "MACD":
+        if value > 0: return "📈", "상승강화"
+        return "📉", "하락지속"
+    elif name == "BB":
+        if value > 0.9: return "🚀", "상단돌파"
+        if value < 0.1: return "🛡️", "하단지지"
+        return "📦", "박스권"
+    elif name == "Stoch":
+        if value > 80: return "⚠️", "단기과열"
+        if value < 20: return "☘️", "단기저점"
+        return "⚖️", "중립"
+    elif name == "Volume":
+        if value > 250: return "💥", "수급폭발"
+        if value < 50: return "💤", "거래침체"
+        return "✅", "보통"
+    return "", ""
 
 # --- 데이터 가져오기 (캐싱) ---
 @st.cache_data(ttl=600)
 def fetch_stock_data(ticker):
     """
-    yfinance에서 3달치 데이터 가져오기 (지표 계산용)
+    yfinance에서 1년치 데이터 가져오기 및 퀀트 분석 엔진 연동
     """
     if not ticker: return None
     try:
-        df = yf.download(ticker, period="3mo", progress=False)
+        df = yf.download(ticker, period="1y", progress=False)
         if df.empty: return None
         
-        # 멀티인덱스 컬럼 처리 (yfinance 최신버전 이슈 대응)
+        # 멀티인덱스 컬럼 처리
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
 
-        current_price = df['Close'].iloc[-1]
-        prev_price = df['Close'].iloc[-2]
-        change_pct = ((current_price - prev_price) / prev_price) * 100
+        # 퀀트 분석 엔진 호출
+        metrics = analyze_stock(df)
         
-        rsi, disparity = calculate_indicators(df)
+        current_price = df['Close'].iloc[-1]
+        prev_price = df['Close'].iloc[-2] if len(df) >= 2 else current_price
+        change_pct = ((current_price - prev_price) / prev_price) * 100 if len(df) >=2 else 0
         
         return {
             "price": current_price,
             "change": change_pct,
-            "rsi": rsi,
-            "disparity": disparity,
-            "history": df # 차트 그리기용 데이터프레임
+            "metrics": metrics,
+            "history": df
         }
     except Exception as e:
         return None
@@ -131,38 +140,81 @@ if menu == "📈 종합 현황판":
                     # 데이터 로딩
                     data = fetch_stock_data(ticker) if ticker else None
                     
-                    # --- 요약 카드 ---
+                    # --- 요약 카드 라벨 생성 ---
                     label_text = f"**{keyword}**"
                     if data:
-                        price_fmt = f"{data['price']:,.0f}" if ".KS" in str(ticker) or ".KQ" in str(ticker) else f"{data['price']:.2f}"
+                        m = data['metrics']
+                        price_fmt = f"{data['price']:,.0f}" if ticker and (".KS" in str(ticker) or ".KQ" in str(ticker)) else f"{data['price']:.2f}"
                         emoji = "🔺" if data['change'] > 0 else "🦋"
                         
-                        rsi_val = data['rsi'] if data['rsi'] else 0
-                        rsi_status = "과매수" if rsi_val >= 70 else "과매도" if rsi_val <= 30 else "중립"
+                        # 요약 지표 아이콘
+                        rsi_icon, _ = get_indicator_status("RSI", m['rsi'])
+                        vol_icon, _ = get_indicator_status("Volume", m['volume_ratio'])
+                        score_icon = "💎" if m['score'] >= 70 else "⚠️" if m['score'] <= 30 else "📉" if m['score'] < 50 else "📈"
                         
-                        disp_val = data['disparity'] if data['disparity'] else 0
-                        disp_emoji = "🔥과열" if disp_val > 5 else "❄️침체" if disp_val < -5 else "평이"
-
-                        label_text += f" | {price_fmt} ({emoji} {data['change']:.2f}%) | RSI: {rsi_val:.0f} ({rsi_status}) | 이격: {disp_emoji}"
+                        label_text += f" | {price_fmt} ({emoji} {data['change']:.2f}%) | {score_icon} Score: {m['score']} | {rsi_icon} RSI | {vol_icon} Vol"
                     else:
                         label_text += " | ⏳ 로딩중/티커없음"
 
                     with st.expander(label_text, expanded=False):
-                        c1, c2 = st.columns([3, 1])
+                        if not data:
+                            st.warning("데이터를 가져오는 중이거나 티커가 올바르지 않습니다.")
+                            continue
+                            
+                        m = data['metrics']
+                        
+                        # --- 상단 메트릭 레이아웃 ---
+                        mc1, mc2, mc3, mc4 = st.columns(4)
+                        mc1.metric("종합 점수", f"{m['score']}점", help="10대 지표 가중 합산 점수")
+                        mc2.metric("52주 위치", f"{m['position_52w']:.1f}%", help="1년 고/저점 대비 가격 위치")
+                        mc3.metric("RSI (14)", f"{m['rsi']:.1f}" if m['rsi'] else "N/A")
+                        # 이격도는 metrics의 disparity 사용
+                        mc4.metric("이격도 (20)", f"{m['disparity']:.1f}%" if m['disparity'] else "N/A")
+
+                        st.markdown("---")
+                        
+                        # --- 상세 분석 표 & 차트 ---
+                        c1, c2 = st.columns([2, 1])
                         
                         with c1:
-                            if data and data['history'] is not None:
-                                st.caption("📉 최근 3개월 주가 흐름")
-                                st.line_chart(data['history']['Close'], height=250)
-                            else:
-                                st.write("차트 데이터 없음")
-                                
+                            st.write("#### 📊 10대 퀀트 지표 분석")
+                            
+                            # 데이터프레임 구성을 위한 리스트
+                            q_data = []
+                            # 모멘텀
+                            r_i, r_s = get_indicator_status("RSI", m['rsi'])
+                            q_data.append(["모멘텀", "RSI (14)", f"{m['rsi']:.1f}" if m['rsi'] else "-", f"{r_i} {r_s}"])
+                            
+                            m_i, m_s = get_indicator_status("MFI", m['mfi'])
+                            q_data.append(["모멘텀", "MFI (14)", f"{m['mfi']:.1f}" if m['mfi'] else "-", f"{m_i} {m_s}"])
+                            
+                            s_i, s_s = get_indicator_status("Stoch", m['stochastic']['k'])
+                            q_data.append(["모멘텀", "Stoch K", f"{m['stochastic']['k']:.1f}" if m['stochastic']['k'] else "-", f"{s_i} {s_s}"])
+                            
+                            # 추세
+                            macd_i, macd_s = get_indicator_status("MACD", m['macd']['hist'])
+                            q_data.append(["추세", "MACD Hist", f"{m['macd']['hist']:.1f}" if m['macd']['hist'] else "-", f"{macd_i} {macd_s}"])
+                            q_data.append(["추세", "MA 배열", m['ma_alignment'], "추세 지속성"])
+                            
+                            # 변동성/기타
+                            b_i, b_s = get_indicator_status("BB", m['bollinger']['pct_b'])
+                            q_data.append(["변동성", "Bollinger %B", f"{m['bollinger']['pct_b']:.2f}" if m['bollinger']['pct_b'] is not None else "-", f"{b_i} {b_s}"])
+                            
+                            v_i, v_s = get_indicator_status("Volume", m['volume_ratio'])
+                            q_data.append(["수급", "거래량 비율", f"{m['volume_ratio']:.1f}%" if m['volume_ratio'] else "-", f"{v_i} {v_s}"])
+
+                            qt_df = pd.DataFrame(q_data, columns=["분류", "지표명", "현재값", "상태 진단"])
+                            st.table(qt_df)
+                            
+                            # ATR 정보
+                            if m['atr']:
+                                st.info(f"💡 **리스크 관리**: ATR 변동폭은 **{m['atr']:,.0f}원**이며, 추천 손절가(2-ATR)는 **{m['stop_loss']:,.0f}원**입니다.")
+
                         with c2:
-                            st.write("#### 관리 메뉴")
-                            # ★ 수정된 부분: 변수명 일치 (stock_url)
+                            st.write("#### 🛠️ 관리 메뉴")
                             stock_url, news_url = get_links(keyword, ticker)
-                            st.markdown(f"👉 [금융 정보 이동]({stock_url})")
-                            st.markdown(f"👉 [관련 뉴스 검색]({news_url})")
+                            st.markdown(f"🔗 [네이버/야후 금융 정보]({stock_url})")
+                            st.markdown(f"📰 [관련 최신 뉴스 검색]({news_url})")
                             
                             st.markdown("---")
                             is_on = st.toggle("감시 봇 작동", value=row['is_active'], key=f"tg_{row['id']}")
@@ -172,6 +224,11 @@ if menu == "📈 종합 현황판":
                             if section_name == "Fixed":
                                 if st.button("삭제", key=f"del_{row['id']}"):
                                     delete_keyword(row['id'])
+                            
+                            st.markdown("---")
+                            if data['history'] is not None:
+                                st.caption("📈 최근 주가 추이 (1년)")
+                                st.line_chart(data['history']['Close'], height=200)
 
             # [Tab 1] Fixed 렌더링
             with tab1:
